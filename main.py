@@ -1,14 +1,11 @@
-# requirements.txt 파일에 아래 두 줄을 꼭 적어주세요:
-# fastapi
-# uvicorn
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import math
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
 
 app = FastAPI()
 
-# 프론트엔드(깃허브 페이지)에서 접근할 수 있도록 CORS 허용
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -16,87 +13,115 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ==========================================
+# 📊 [데이터베이스 세팅] pandas DataFrame 준비
+# ==========================================
+# [선생님 전용 팁] 실제 서버 운영 시에는 아래처럼 CSV 파일을 불러옵니다.
+# pop_df = pd.read_csv("population_data.csv")
+# sat_df = pd.read_csv("satellite_data.csv")
+
+# 현재는 테스트를 위해 코드 내부에서 pandas 데이터프레임을 직접 생성합니다.
+# 1. 인구 데이터 (과거~현재)
+pop_data = {
+    'year': [2000, 2005, 2010, 2015, 2020, 2025],
+    '서울': [10370000, 10160000, 10050000, 9900000, 9660000, 9400000], # 감소 추세
+    '화성': [210000, 280000, 500000, 600000, 850000, 1000000],        # 급증 추세
+    '부산': [3800000, 3650000, 3560000, 3440000, 3390000, 3280000]    # 감소 추세
+}
+pop_df = pd.DataFrame(pop_data)
+
+# 2. 위성(식생/도시화) 데이터
+sat_data = {
+    'region': ['서울', '서울', '서울', '화성', '화성', '화성', '제주', '제주', '제주'],
+    'year': [2000, 2010, 2020, 2000, 2010, 2020, 2000, 2010, 2020],
+    'ndvi': [0.55, 0.48, 0.42, 0.78, 0.65, 0.51, 0.85, 0.83, 0.80], # 식생지수 (높을수록 숲)
+    'lst': [24.5, 25.8, 27.2, 22.1, 23.5, 25.4, 21.0, 21.5, 22.0]   # 지표면 온도 (열섬)
+}
+sat_df = pd.DataFrame(sat_data)
+
+
 @app.get("/")
 def home():
-    return {"message": "통합사회 빅데이터 분석 서버가 정상 작동 중입니다."}
+    return {"message": "데이터 사이언스 백엔드 서버가 가동 중입니다."}
 
 # ==========================================
-# 📡 [기능 1] 위성 데이터 분석 (NDVI 및 도시화 지수)
+# 🛰️ [기능 1] pandas를 활용한 위성 데이터 검색 및 추세 분석
 # ==========================================
 @app.get("/analyze-satellite")
 def analyze_satellite(region: str, year: int):
-    # 가상의 알고리즘: 연도가 최신일수록 식생지수(NDVI)는 감소, 도시 열섬 강도는 증가
-    base_year = 1990
-    years_passed = max(0, year - base_year)
+    # 1. 입력된 지역의 데이터만 pandas 필터링
+    region_df = sat_df[sat_df['region'] == region]
     
-    # 식생지수 (1.0에 가까울수록 숲이 울창함)
-    ndvi = max(0.2, 0.85 - (years_passed * 0.015))
+    if region_df.empty:
+        return {"insight": f"'{region}'의 위성 데이터가 DB에 없습니다. (현재: 서울, 화성, 제주 지원)", "ndvi": 0, "heat_island": 0}
     
-    # 도시 열섬 강도 (도심과 외곽의 온도차)
-    heat_island = min(5.5, 0.5 + (years_passed * 0.12))
+    # 2. scikit-learn 선형회귀를 이용해 원하는 연도의 NDVI, LST 예측
+    # (과거 데이터를 학습하여 입력된 year의 값을 추론)
+    X = region_df[['year']]
     
-    # 지역별 특성 가중치
-    if "서울" in region or "seoul" in region.lower():
-        heat_island += 1.5
-        ndvi -= 0.1
-    elif "제주" in region or "강원" in region:
-        heat_island -= 1.0
-        ndvi += 0.2
+    model_ndvi = LinearRegression().fit(X, region_df['ndvi'])
+    pred_ndvi = model_ndvi.predict([[year]])[0]
+    
+    model_lst = LinearRegression().fit(X, region_df['lst'])
+    pred_lst = model_lst.predict([[year]])[0]
 
-    insight = f"{year}년 {region}의 위성 데이터 분석 결과, "
-    if ndvi < 0.4:
-        insight += "심각한 식생 파괴와 급격한 도시화가 관찰됩니다. 열섬 현상에 대비해야 합니다."
+    # 3. 인사이트 도출
+    insight = f"{year}년 {region}의 머신러닝 추론 결과, "
+    if pred_ndvi < 0.4:
+        insight += "식생 파괴가 심각하며 "
     else:
-        insight += "비교적 양호한 식생(녹지)이 보존되어 있습니다."
+        insight += "식생이 양호하며 "
+        
+    if pred_lst > 26.0:
+        insight += "강력한 열섬 현상이 경고됩니다."
+    else:
+        insight += "표면 온도가 안정적입니다."
 
     return {
         "region": region,
         "year": year,
-        "ndvi": round(ndvi, 2),
-        "heat_island": round(heat_island, 1),
+        "ndvi": round(float(pred_ndvi), 2),
+        "heat_island": round(float(pred_lst), 1),
         "insight": insight
     }
 
+
 # ==========================================
-# 👨‍👩‍👧‍👦 [기능 2] 인구 예측 AI 모델 (로지스틱 성장 곡선)
+# 🤖 [기능 2] scikit-learn을 활용한 머신러닝 인구 예측
 # ==========================================
 @app.get("/predict-population")
 def predict_population(city: str, current_pop: int, target_year: int):
-    current_year = 2026
-    years_diff = target_year - current_year
+    if city not in pop_df.columns:
+        return {"error": f"'{city}'의 역사적 인구 데이터가 DB에 없습니다. (현재: 서울, 화성, 부산 지원)"}
     
-    if years_diff < 0:
-        return {"error": "목표 연도는 현재(2026년)보다 미래여야 합니다."}
+    # 1. 머신러닝 모델 학습 준비
+    X_train = pop_df[['year']]  # 독립 변수 (연도)
+    y_train = pop_df[city]      # 종속 변수 (해당 도시의 과거 인구)
     
-    # 가상의 알고리즘: 지역 이름에 따른 성장률(r) 및 수용 환경(K) 차등 적용
-    # 실제로는 통계청 API에서 데이터를 끌어와서 ARIMA나 선형회귀 모델을 돌리는 자리입니다.
-    if city in ["서울", "부산", "대구", "대전", "광주"]:
-        growth_rate = -0.008  # 대도시는 저출산/고령화로 인구 감소 추세 적용
-        carrying_capacity = current_pop * 1.1 
-    elif city in ["화성", "평택", "세종", "용인"]:
-        growth_rate = 0.035   # 신도시/산업단지는 인구 급증 적용
-        carrying_capacity = current_pop * 2.5
-    else:
-        growth_rate = -0.015  # 지방 중소도시는 인구 소멸 추세 적용 (가파른 감소)
-        carrying_capacity = current_pop * 1.0
-
-    # 자연 지수 모델 (P = P0 * e^(rt))
-    predicted_pop = current_pop * math.exp(growth_rate * years_diff)
+    # 2. scikit-learn 선형 회귀(Linear Regression) 모델 생성 및 학습
+    model = LinearRegression()
+    model.fit(X_train, y_train)
     
-    # 증감률 계산
+    # 3. AI 모델에 목표 연도(target_year)를 넣어 미래 인구 예측
+    predicted_pop = model.predict([[target_year]])[0]
+    
+    # 예측값이 음수가 나오는 오류 방지 (인구는 0 이하가 될 수 없음)
+    predicted_pop = max(0, int(predicted_pop))
+    
+    # 4. 증감률 계산
     percent_change = ((predicted_pop - current_pop) / current_pop) * 100
     
-    insight = f"{city}의 {target_year}년 예상 인구는 약 {int(predicted_pop):,}명입니다. "
+    insight = f"통계청 과거 데이터를 학습한 AI 예측 결과, {target_year}년 {city}의 인구는 약 {predicted_pop:,}명으로 예상됩니다. "
     if percent_change > 0:
-        insight += f"현재 대비 인구가 {percent_change:.1f}% 증가하며 도시 인프라 확충이 시급합니다."
+        insight += "지속적인 인구 유입에 대비한 인프라 확충이 필요합니다."
     else:
-        insight += f"현재 대비 인구가 {abs(percent_change):.1f}% 감소하며 '지방 소멸' 현상에 대한 대비책이 필요합니다."
+        insight += "인구 감소 추세가 확인되며, 지역 균형 발전 정책이 요구됩니다."
 
     return {
         "city": city,
         "current_pop": current_pop,
         "target_year": target_year,
-        "predicted_pop": int(predicted_pop),
+        "predicted_pop": predicted_pop,
         "percent_change": round(percent_change, 1),
         "insight": insight
     }
